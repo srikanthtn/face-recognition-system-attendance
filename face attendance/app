@@ -1,0 +1,172 @@
+import cv2
+import face_recognition  # type: ignore
+import os
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+import pandas as pd  # type: ignore
+from datetime import datetime
+
+KNOWN_FACES_DIR = "known_faces"
+ATTENDANCE_FILE = "attendance.xlsx"
+
+if not os.path.exists(KNOWN_FACES_DIR):
+    os.makedirs(KNOWN_FACES_DIR)
+
+def load_known_faces():
+    known_face_encodings = []
+    known_face_names = []
+
+    for file_name in os.listdir(KNOWN_FACES_DIR):
+        if file_name.endswith(".jpg"):
+            image_path = os.path.join(KNOWN_FACES_DIR, file_name)
+            image = face_recognition.load_image_file(image_path)
+            encodings = face_recognition.face_encodings(image)
+            if encodings:
+                known_face_encodings.append(encodings[0])
+                known_face_names.append(file_name.split('.')[0])
+
+    return known_face_encodings, known_face_names
+
+def register_face():
+    name = simpledialog.askstring("Register Face", "Enter your name:")
+    if not name:
+        return
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        messagebox.showerror("Error", "Could not access the webcam.")
+        return
+
+    messagebox.showinfo("Instructions", "Press 's' to capture your face")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            messagebox.showerror("Error", "Failed to read frame from webcam.")
+            break
+
+        cv2.imshow("Register Face - Press 's' to capture", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('s'):
+            # Convert to RGB and validate
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+            # Ensure the frame is 8-bit RGB
+            if rgb_frame.dtype != 'uint8' or len(rgb_frame.shape) != 3 or rgb_frame.shape[2] != 3:
+                messagebox.showerror("Error", "Captured frame is not 8-bit RGB.")
+                break
+
+            try:
+                face_locations = face_recognition.face_locations(rgb_frame)
+            except Exception as e:
+                messagebox.showerror("Error", f"Face detection failed: {e}")
+                break
+
+            if face_locations:
+                face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+                if face_encodings:
+                    new_encoding = face_encodings[0]
+                    known_encodings, _ = load_known_faces()
+                    matches = face_recognition.compare_faces(known_encodings, new_encoding)
+
+                    if True in matches:
+                        messagebox.showwarning("Warning", "Face already registered!")
+                    else:
+                        cv2.imwrite(os.path.join(KNOWN_FACES_DIR, f"{name}.jpg"), frame)
+                        messagebox.showinfo("Success", f"Face registered for {name}")
+                else:
+                    messagebox.showerror("Error", "Could not encode face. Try again.")
+            else:
+                messagebox.showerror("Error", "No face detected. Try again.")
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+def mark_in_excel(name):
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    if os.path.exists(ATTENDANCE_FILE):
+        df = pd.read_excel(ATTENDANCE_FILE)
+    else:
+        df = pd.DataFrame(columns=["Name", "Date"])
+
+    if not ((df['Name'] == name) & (df['Date'] == current_date)).any():
+        new_row = pd.DataFrame([{"Name": name, "Date": current_date}])
+        df = pd.concat([df, new_row], ignore_index=True)
+        df.to_excel(ATTENDANCE_FILE, index=False)
+        messagebox.showinfo("Attendance", f"Attendance marked for {name}")
+    else:
+        messagebox.showinfo("Already Marked", f"Attendance already marked for {name}")
+
+def mark_attendance():
+    known_face_encodings, known_face_names = load_known_faces()
+
+    if not known_face_encodings:
+        messagebox.showerror("Error", "No registered faces found!")
+        return
+
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        messagebox.showerror("Error", "Could not access the webcam.")
+        return
+
+    messagebox.showinfo("Instructions", "Press 'q' to quit after marking attendance")
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            messagebox.showerror("Error", "Failed to read frame from webcam.")
+            break
+
+        rgb_small_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Ensure proper format
+        if rgb_small_frame.dtype != 'uint8' or len(rgb_small_frame.shape) != 3 or rgb_small_frame.shape[2] != 3:
+            continue  # Skip invalid frames
+
+        face_locations = face_recognition.face_locations(rgb_small_frame)
+        face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+
+        for face_encoding in face_encodings:
+            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+            best_match_index = face_distances.argmin() if face_distances.size > 0 else None
+
+            if best_match_index is not None and matches[best_match_index]:
+                name = known_face_names[best_match_index]
+                mark_in_excel(name)
+
+        cv2.imshow("Marking Attendance", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+def clear_attendance():
+    if os.path.exists(ATTENDANCE_FILE):
+        os.remove(ATTENDANCE_FILE)
+        messagebox.showinfo("Clear Attendance", "Attendance cleared successfully.")
+    else:
+        messagebox.showinfo("Clear Attendance", "No attendance file found to clear.")
+
+# GUI setup
+root = tk.Tk()
+root.title("Face Recognition Attendance System")
+root.geometry("400x250")
+
+register_button = tk.Button(root, text="Register Face", command=register_face, height=2, width=25)
+register_button.pack(pady=10)
+
+attendance_button = tk.Button(root, text="Mark Attendance", command=mark_attendance, height=2, width=25)
+attendance_button.pack(pady=10)
+
+clear_button = tk.Button(root, text="Clear Attendance", command=clear_attendance, height=2, width=25)
+clear_button.pack(pady=10)
+
+exit_button = tk.Button(root, text="Exit", command=root.destroy, height=2, width=25)
+exit_button.pack(pady=10)
+
+root.mainloop()
